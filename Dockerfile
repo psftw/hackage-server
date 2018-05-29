@@ -10,35 +10,30 @@
 # Docker> # hackage-server run --static-dir=datafiles
 #
 
-FROM ubuntu
+FROM ubuntu:xenial
 
-RUN apt-get update
+RUN apt-get update && \
+	apt-get install -y software-properties-common && \
+	apt-add-repository ppa:hvr/ghc && \
+	apt-get update && \
+	apt-get install -y --no-install-recommends \
+		cabal-install-2.0 \
+		ghc-8.2.1 \
+		libicu-dev
+		libssl-dev \
+		netbase \
+		unzip \
+		zlib1g-dev
 
-# Install apt-add-repository
-RUN apt-get install -y software-properties-common
-
-# Use Herbert's PPA on Ubuntu for getting GHC and cabal-install
-RUN apt-add-repository ppa:hvr/ghc
-
-RUN apt-get update
-
-# Dependencies
-RUN apt-get install -yy unzip libicu-dev postfix
-RUN apt-get install -y ghc-8.2.1 cabal-install-2.0
-ENV PATH /opt/ghc/bin:$PATH
-RUN cabal update
-
-# Required Header files
-RUN apt-get install -y zlib1g-dev libssl-dev
+ENV PATH /build/.cabal-sandbox/bin:/opt/ghc/bin:$PATH
 
 # haskell dependencies
 RUN mkdir /build
 WORKDIR /build
 ADD ./hackage-server.cabal ./hackage-server.cabal
-RUN cabal sandbox init
+RUN cabal update && cabal sandbox init
 # TODO: Switch to Nix-style cabal new-install
 RUN cabal install --only-dependencies --enable-tests -j --force-reinstalls
-ENV PATH /build/.cabal-sandbox/bin:$PATH
 
 # needed for creating TUF keys
 RUN cabal install hackage-repo-tool
@@ -49,25 +44,18 @@ RUN cabal install hackage-repo-tool
 ADD . /build
 
 # generate keys (needed for tests)
-RUN hackage-repo-tool create-keys --keys keys
-RUN cp keys/timestamp/*.private datafiles/TUF/timestamp.private
-RUN cp keys/snapshot/*.private datafiles/TUF/snapshot.private
-RUN hackage-repo-tool create-root --keys keys -o datafiles/TUF/root.json
-RUN hackage-repo-tool create-mirrors --keys keys -o datafiles/TUF/mirrors.json
+RUN hackage-repo-tool create-keys --keys keys && \
+	cp keys/timestamp/*.private datafiles/TUF/timestamp.private && \
+	cp keys/snapshot/*.private datafiles/TUF/snapshot.private && \
+	hackage-repo-tool create-root --keys keys -o datafiles/TUF/root.json && \
+	hackage-repo-tool create-mirrors --keys keys -o datafiles/TUF/mirrors.json
 
-# build & test & install hackage
-RUN cabal configure -f-build-hackage-mirror --enable-tests
-RUN cabal build
-# tests currently don't pass: the hackage-security work introduced some
-# backup/restore errors (though they look harmless)
-# see https://github.com/haskell/hackage-server/issues/425
-#RUN cabal test
+# build & install hackage
+RUN cabal configure -f-build-hackage-mirror --enable-tests && cabal build
 RUN cabal copy && cabal register
 
+VOLUME /build/state
+
 # setup server runtime environment
-RUN mkdir /runtime
-RUN cp -r /build/datafiles /runtime/datafiles
-WORKDIR /runtime
-RUN hackage-server init --static-dir=datafiles
-CMD hackage-server run  --static-dir=datafiles
+CMD hackage-server init --static-dir=datafiles && hackage-server run  --static-dir=datafiles --ip=0.0.0.0
 EXPOSE 8080
